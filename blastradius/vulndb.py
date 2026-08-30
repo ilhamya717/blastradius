@@ -37,13 +37,13 @@ def _default_cache_dir() -> Path:
     return Path.home() / ".cache" / "blastradius" / "osv"
 
 
-def _cache_key(package: str, version: str | None) -> str:
-    raw = f"{package}@{version or 'unknown'}"
+def _cache_key(package: str, version: str | None, ecosystem: str = "PyPI") -> str:
+    raw = f"{ecosystem}:{package}@{version or 'unknown'}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
-def _read_cache(cache_dir: Path, package: str, version: str | None, ttl: float) -> list[Vulnerability] | None:
-    path = cache_dir / f"{_cache_key(package, version)}.json"
+def _read_cache(cache_dir: Path, package: str, version: str | None, ecosystem: str, ttl: float) -> list[Vulnerability] | None:
+    path = cache_dir / f"{_cache_key(package, version, ecosystem)}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -56,19 +56,19 @@ def _read_cache(cache_dir: Path, package: str, version: str | None, ttl: float) 
         return None
 
 
-def _write_cache(cache_dir: Path, package: str, version: str | None, vulns: list[Vulnerability]) -> None:
+def _write_cache(cache_dir: Path, package: str, version: str | None, ecosystem: str, vulns: list[Vulnerability]) -> None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        path = cache_dir / f"{_cache_key(package, version)}.json"
-        payload = {"package": package, "version": version, "cached_at": time.time(),
+        path = cache_dir / f"{_cache_key(package, version, ecosystem)}.json"
+        payload = {"package": package, "version": version, "ecosystem": ecosystem, "cached_at": time.time(),
                    "vulns": [asdict(v) for v in vulns]}
         path.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass  # caching is a best-effort speedup, never a hard requirement
 
 
-def _query_osv(package: str, version: str | None) -> list[Vulnerability]:
-    payload: dict = {"package": {"name": package, "ecosystem": "PyPI"}}
+def _query_osv(package: str, version: str | None, ecosystem: str = "PyPI") -> list[Vulnerability]:
+    payload: dict = {"package": {"name": package, "ecosystem": ecosystem}}
     if version:
         payload["version"] = version
 
@@ -108,11 +108,13 @@ def query_vulnerabilities(
     package: str,
     version: str | None,
     *,
+    ecosystem: str = "PyPI",
     use_cache: bool = True,
     cache_dir: Path | None = None,
     cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
 ) -> list[Vulnerability]:
-    """Return known OSV vulnerabilities for a PyPI package at a given version.
+    """Return known OSV vulnerabilities for a package at a given version.
+    `ecosystem` is an OSV.dev ecosystem string -- "PyPI" or "npm" today.
 
     If version is None, queries without a version pin (broader match --
     see report.py's version_unknown handling, which deliberately doesn't
@@ -121,13 +123,13 @@ def query_vulnerabilities(
     cache_dir = cache_dir or _default_cache_dir()
 
     if use_cache:
-        cached = _read_cache(cache_dir, package, version, cache_ttl)
+        cached = _read_cache(cache_dir, package, version, ecosystem, cache_ttl)
         if cached is not None:
             return cached
 
-    vulns = _query_osv(package, version)
+    vulns = _query_osv(package, version, ecosystem)
 
     if use_cache:
-        _write_cache(cache_dir, package, version, vulns)
+        _write_cache(cache_dir, package, version, ecosystem, vulns)
 
     return vulns

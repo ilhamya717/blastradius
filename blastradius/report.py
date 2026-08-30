@@ -50,7 +50,7 @@ def build_report(deps: list[Dependency], graph: ProjectGraph, *, use_cache: bool
     for dep in deps:
         vulns: list[Vulnerability] = []
         try:
-            vulns = query_vulnerabilities(dep.name, dep.version, use_cache=use_cache)
+            vulns = query_vulnerabilities(dep.name, dep.version, ecosystem=dep.ecosystem, use_cache=use_cache)
         except RuntimeError as exc:
             console.print(f"[yellow]warn:[/yellow] {exc}")
 
@@ -66,10 +66,18 @@ def build_report(deps: list[Dependency], graph: ProjectGraph, *, use_cache: bool
                     reachable_users=[fn.qualname for fn in reachable],
                 )
             )
-    # sort: critical first
-    order = {"critical": 0, "moderate": 1, "low": 2, "none": 3}
-    entries.sort(key=lambda e: (order[e.severity], -len(e.vulns)))
+    sort_entries(entries)
     return entries
+
+
+_SEVERITY_SORT_ORDER = {"critical": 0, "moderate": 1, "low": 2, "none": 3}
+
+
+def sort_entries(entries: list[BlastRadiusEntry]) -> None:
+    """Sort in place, critical first. Exposed separately so entries from
+    multiple languages/graphs (e.g. Python + JS in the same scan) can be
+    concatenated and re-sorted as one report."""
+    entries.sort(key=lambda e: (_SEVERITY_SORT_ORDER[e.severity], -len(e.vulns)))
 
 
 def print_report(entries: list[BlastRadiusEntry], console: Console = console) -> None:

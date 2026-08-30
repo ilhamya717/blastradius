@@ -1,6 +1,7 @@
 """Discover project dependencies and their installed versions."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,12 +14,17 @@ except ImportError:  # pragma: no cover
 
 @dataclass(frozen=True)
 class Dependency:
-    name: str          # PyPI distribution name, e.g. "requests"
-    version: str | None  # installed version, if resolvable
+    name: str          # distribution/package name, e.g. "requests" or "express"
+    version: str | None  # installed/pinned version, if resolvable
+    ecosystem: str = "PyPI"  # OSV.dev ecosystem string: "PyPI" or "npm"
 
     @property
     def top_level_modules(self) -> list[str]:
         """Guess the importable module name(s) for this distribution."""
+        if self.ecosystem == "npm":
+            # a JS/TS import/require specifier IS the package name, verbatim
+            # (including scopes like "@org/pkg" and dots like "lodash.get")
+            return [self.name]
         try:
             dist = importlib_metadata.distribution(self.name)
         except importlib_metadata.PackageNotFoundError:
@@ -91,4 +97,56 @@ def discover_dependencies(project_root: Path) -> list[Dependency]:
             except importlib_metadata.PackageNotFoundError:
                 pass
         deps.append(Dependency(name=name, version=version))
+    return deps
+
+
+_NPM_VERSION_RANGE_PREFIX = re.compile(r"^[\^~>=<\s]+")
+
+
+def discover_js_dependencies(project_root: Path) -> list[Dependency]:
+    """Parse package.json's dependencies/devDependencies. Prefers a locked
+    exact version from package-lock.json/npm-shrinkwrap.json when present
+    (package.json itself usually holds a range like "^4.18.0", not what's
+    actually installed) -- same "declared range vs. actual version" gap
+    that requirements.txt pinning solved on the Python side.
+    """
+    pkg_json = project_root / "package.json"
+    if not pkg_json.exists():
+        return []
+    try:
+        manifest = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError:
+        return []
+
+    ranges: dict[str, str] = {}
+    for section in ("dependencies", "devDependencies"):
+        ranges.update(manifest.get(section) or {})
+
+    locked: dict[str, str] = {}
+    for lockfile in ("package-lock.json", "npm-shrinkwrap.json"):
+        lock_path = project_root / lockfile
+        if not lock_path.exists():
+            continue
+        try:
+            lock_data = json.loads(lock_path.read_text(encoding="utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            continue
+        # npm lockfile v2/v3: packages["node_modules/<name>"].version
+        for key, info in (lock_data.get("packages") or {}).items():
+            if key.startswith("node_modules/") and isinstance(info, dict) and info.get("version"):
+                locked.setdefault(key[len("node_modules/"):], info["version"])
+        # lockfile v1 fallback
+        for name, info in (lock_data.get("dependencies") or {}).items():
+            if isinstance(info, dict) and info.get("version"):
+                locked.setdefault(name, info["version"])
+        break  # first lockfile found wins
+
+    deps = []
+    for name in sorted(ranges):
+        version = locked.get(name) or _NPM_VERSION_RANGE_PREFIX.sub("", ranges[name]).strip() or None
+        # a bare range (no lockfile) isn't a confirmed version -- only trust
+        # it if it looks like an exact pin (no remaining range operators)
+        if version and not re.fullmatch(r"[\w.\-+]+", version):
+            version = None
+        deps.append(Dependency(name=name, version=version, ecosystem="npm"))
     return deps

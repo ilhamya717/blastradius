@@ -1,0 +1,9 @@
+{
+  "name": "blastradius-js-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dumps a Babel AST as JSON for blastradius's Python side to consume.",
+  "dependencies": {
+    "@babel/parser": "^7.24.0"
+  }
+}

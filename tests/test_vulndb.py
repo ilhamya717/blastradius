@@ -14,7 +14,7 @@ def _fake_osv_response(vuln_ids):
 def test_second_call_hits_cache_not_network(tmp_path: Path):
     call_count = 0
 
-    def fake_query(package, version):
+    def fake_query(package, version, ecosystem="PyPI"):
         nonlocal call_count
         call_count += 1
         return [Vulnerability(id="GHSA-1", summary="x", severity=None, aliases=[])]
@@ -31,7 +31,7 @@ def test_second_call_hits_cache_not_network(tmp_path: Path):
 def test_no_cache_flag_always_hits_network(tmp_path: Path):
     call_count = 0
 
-    def fake_query(package, version):
+    def fake_query(package, version, ecosystem="PyPI"):
         nonlocal call_count
         call_count += 1
         return []
@@ -49,7 +49,7 @@ def test_different_versions_have_independent_cache_entries(tmp_path: Path):
         [],  # newer version, no vulns
     ])
 
-    def fake_query(package, version):
+    def fake_query(package, version, ecosystem="PyPI"):
         return next(responses)
 
     with patch("blastradius.vulndb._query_osv", side_effect=fake_query):
@@ -63,7 +63,7 @@ def test_different_versions_have_independent_cache_entries(tmp_path: Path):
 def test_expired_cache_entry_is_refetched(tmp_path: Path):
     call_count = 0
 
-    def fake_query(package, version):
+    def fake_query(package, version, ecosystem="PyPI"):
         nonlocal call_count
         call_count += 1
         return []
@@ -81,7 +81,7 @@ def test_corrupt_cache_file_falls_back_to_network(tmp_path: Path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     cache_file.write_text("not valid json{{{", encoding="utf-8")
 
-    def fake_query(package, version):
+    def fake_query(package, version, ecosystem="PyPI"):
         return [Vulnerability(id="GHSA-FRESH", summary="x", severity=None, aliases=[])]
 
     with patch("blastradius.vulndb._query_osv", side_effect=fake_query):

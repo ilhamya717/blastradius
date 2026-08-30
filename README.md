@@ -14,21 +14,30 @@ existence-based SCA tools.
 
 ## How it works
 
-1. **Scan** `requirements.txt` / `pyproject.toml` for declared dependencies
-   and resolve installed versions via `importlib.metadata`.
-2. **Static analysis** (`ast`, no execution) over your project's `.py` files:
+1. **Scan** `requirements.txt`/`pyproject.toml` (Python) or `package.json`
+   + a lockfile (JS/TS) for declared dependencies and resolve actual
+   pinned/installed versions.
+2. **Static analysis**, no code execution — Python's own `ast` module for
+   `.py` files, `@babel/parser` via a small Node.js helper for
+   `.js`/`.jsx`/`.ts`/`.tsx`. Both feed the same internal model:
    - which functions import/use which dependency,
    - a heuristic call graph between your own functions,
-   - a heuristic entrypoint detector (Flask/FastAPI routes, Click/argparse
-     CLIs, `if __name__ == "__main__"` blocks, functions named `main`).
+   - a heuristic entrypoint detector — Python: Flask/FastAPI routes
+     (decorator- or `add_url_rule`/`add_api_route`-registered), Django
+     class-based views and `urlpatterns`, Click/argparse CLIs,
+     `if __name__ == "__main__"`; JS/TS: Express/Koa/Fastify-style
+     `app.get/post/put/.../use(...)` registration (decorator- or
+     call-based, inline or by referencing a named handler).
 3. **Reachability**: BFS from every detected entrypoint through the call
    graph — a dependency's usage is "reachable" if some entrypoint can reach
-   the function that touches it.
+   the function that touches it. Module-level ("top of file") usage is
+   credited via a same-language import graph.
 4. **Vulnerability lookup** via [OSV.dev](https://osv.dev) for each
-   package+version.
+   package+version (ecosystem `PyPI` or `npm`), cached to disk.
 5. **Report**: severity is driven by reachability, not just CVE existence —
    `critical` (vulnerable + reachable from an entrypoint) down to `low`
-   (vulnerable but declared/unused in the scanned code).
+   (vulnerable but declared/unused in the scanned code). Python and JS/TS
+   findings from the same project are merged into one report.
 
 ## Install
 
@@ -36,6 +45,20 @@ existence-based SCA tools.
 cd blastradius
 pip install -e .
 ```
+
+For JS/TS projects, also install the bundled Node.js helper's dependency
+(parsing is done via `@babel/parser` — there's no pure-Python JS/TS/JSX
+parser worth trusting):
+
+```
+cd blastradius/js_helper
+npm install
+```
+
+Node.js on `PATH` is required for JS/TS scanning; Python-only projects
+work with no Node.js involved at all. If `package.json` is found but
+Node.js isn't available, JS/TS analysis is skipped with a warning rather
+than failing the whole scan.
 
 ## Usage
 
@@ -105,6 +128,16 @@ This is a **heuristic v0**, not a sound analysis:
   module scope, not that the specific vulnerable function was called.
 - Dynamic dispatch (`getattr`, decorators that wrap unpredictably, plugin
   systems) is invisible to static `ast` analysis.
+- **JS/TS specifically**: destructured `require`/`import`
+  (`const { merge } = require("lodash")`, `import { merge } from "lodash"`)
+  isn't tracked back to the package — only the whole-module binding form
+  (`const _ = require("lodash")`, `import _ from "lodash"`) is. A
+  destructured import currently under-counts usage (a false negative,
+  the opposite direction from the bare-name-collision risk above).
+  `package-lock.json`/`npm-shrinkwrap.json` resolution covers npm
+  lockfile v1-v3; other package managers (pnpm, Yarn) aren't parsed yet,
+  so their deps fall back to the (unpinned) `package.json` range or
+  `None`.
 
 Treat `critical` findings as **"investigate first"**, not "confirmed
 exploitable" — and treat `low`/`moderate` as "not yet disproven", not safe.
@@ -114,4 +147,5 @@ exploitable" — and treat `low`/`moderate` as "not yet disproven", not safe.
 - Function-level vuln matching (map OSV advisory affected ranges to
   specific patched functions when advisory data allows).
 - Cross-file type-aware call resolution (e.g. via `jedi` or a proper CPG).
-- JS/TS and Go ecosystem support.
+- Destructured `require`/`import` tracking for JS/TS.
+- Go ecosystem support.

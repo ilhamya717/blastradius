@@ -6,8 +6,8 @@ from pathlib import Path
 
 from .baseline import build_baseline, diff_against_baseline, load_baseline, save_baseline
 from .callgraph import build_project_graph
-from .report import build_report, print_report, to_json
-from .scanner import discover_dependencies
+from .report import build_report, print_report, sort_entries, to_json
+from .scanner import discover_dependencies, discover_js_dependencies
 
 _SEVERITY_RANK = {"none": 0, "low": 1, "moderate": 2, "critical": 3}
 
@@ -15,7 +15,7 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "moderate": 2, "critical": 3}
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="blastradius",
-        description="Reachability-aware supply-chain risk scanner for Python projects.",
+        description="Reachability-aware supply-chain risk scanner (Python; JS/TS if Node.js is available).",
     )
     parser.add_argument("path", nargs="?", default=".", help="Project root to scan (default: current dir)")
     parser.add_argument(
@@ -65,13 +65,27 @@ def main() -> None:
             print(msg, file=sys.stderr)
 
     log(f"Scanning {project_root} ...")
-    deps = discover_dependencies(project_root)
-    log(f"Found {len(deps)} declared dependencies.")
+    entries = []
 
-    graph = build_project_graph(project_root)
-    log(f"Parsed {len(graph.funcs)} functions across the project.")
+    py_deps = discover_dependencies(project_root)
+    if py_deps or (project_root / "requirements.txt").exists() or (project_root / "pyproject.toml").exists():
+        log(f"Found {len(py_deps)} declared Python dependencies.")
+        py_graph = build_project_graph(project_root)
+        log(f"Parsed {len(py_graph.funcs)} Python functions across the project.")
+        entries += build_report(py_deps, py_graph, use_cache=not args.no_cache)
 
-    entries = build_report(deps, graph, use_cache=not args.no_cache)
+    if (project_root / "package.json").exists():
+        js_deps = discover_js_dependencies(project_root)
+        log(f"Found {len(js_deps)} declared JS/TS dependencies.")
+        try:
+            from .js_callgraph import NodeNotFoundError, build_js_project_graph
+            js_graph = build_js_project_graph(project_root)
+            log(f"Parsed {len(js_graph.funcs)} JS/TS functions across the project.")
+            entries += build_report(js_deps, js_graph, use_cache=not args.no_cache)
+        except NodeNotFoundError as exc:
+            log(f"[skipping JS/TS analysis] {exc}")
+
+    sort_entries(entries)
 
     if args.output == "json":
         rendered = to_json(entries)
