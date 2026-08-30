@@ -76,9 +76,20 @@ looked at a new finding and decided to accept it.
 ## Limitations (read before trusting the output)
 
 This is a **heuristic v0**, not a sound analysis:
-- No type inference. Call graph resolution is by bare function name, and
-  prefers a same-file match before falling back to a project-wide one, but
-  two same-named functions in the same file/class scope can still collide.
+- **No type inference — call resolution is by bare name, not by object.**
+  `obj1.process()` and `obj2.process()` look identical to this analysis.
+  Resolution prefers a same-file candidate over a project-wide one, which
+  handles the common case (an entrypoint calling a same-file helper), but
+  when an entrypoint calls a bare name with **no same-file candidate at
+  all**, every same-named function *project-wide* gets swept in as a false
+  positive — see `test_KNOWN_LIMITATION_*` in `tests/test_callgraph.py` for
+  a reproduction and a quantified example (the false-positive count scales
+  linearly with how many unrelated functions share that name). This is the
+  tool's biggest source of over-approximation in codebases with common,
+  unqualified method names (`get`/`post`/`handle`/`run`/`process`/...) —
+  there's no fix for it without real type inference, so treat a CRITICAL
+  finding whose only reachable-from path is a long, unfamiliar call chain
+  as worth a second look, not gospel.
 - Module-level ("top of file") code is credited as reachable if its file
   is transitively imported from a file containing an entrypoint — this
   assumes every local `import`/`from` actually executes that file's

@@ -123,6 +123,78 @@ def handle():
     )
 
 
+def test_KNOWN_LIMITATION_project_wide_fallback_causes_false_positive(tmp_path: Path):
+    """Documents a real, un-fixed limitation (flagged in review): when an
+    entrypoint calls a bare name that has NO same-file candidate, resolution
+    falls back to *every* same-named function project-wide -- by object
+    identity, not by name. Two unrelated classes' `process()` methods are
+    indistinguishable to this analysis.
+
+    Here `entry()` calls `dispatch()`, which exists in two unrelated files.
+    Only handler_a.py's dispatch is the one actually reachable at runtime
+    (imagine entry() holds an instance of HandlerA). handler_b.py's dispatch
+    is unrelated and uses risky_pkg -- but because there's no same-file
+    match to prefer, BOTH get marked reachable. This is the tool's known
+    false-positive mode in codebases with common, unqualified method names
+    (get/post/handle/run/process/...) and no same-file call site to anchor
+    resolution to. It trades recall (never miss a real call) for precision
+    here; there is no fix for this without type inference.
+    """
+    write(tmp_path, "main.py", """
+@app.route("/x")
+def entry():
+    return dispatch()
+""")
+    write(tmp_path, "handler_a.py", """
+def dispatch():
+    return "the actually-called one"
+""")
+    write(tmp_path, "handler_b.py", """
+import risky_pkg
+
+def dispatch():
+    return risky_pkg.do_thing()  # never actually reachable from entry()
+""")
+    graph = build_project_graph(tmp_path)
+    reachable = {fn.qualname for fn in find_reachable_users(graph, "risky_pkg")}
+    # This assertion documents the FALSE POSITIVE, it does not endorse it:
+    # handler_b.py:dispatch is flagged reachable even though it isn't.
+    assert reachable == {"handler_b.py:dispatch"}, (
+        "if this now fails, either the false positive was fixed (great -- "
+        "update this test to assert reachable == set()) or resolution "
+        "regressed further"
+    )
+
+
+def test_KNOWN_LIMITATION_fallback_false_positives_scale_with_name_popularity(tmp_path: Path):
+    """Quantifies the same limitation: the more files define a same-named
+    'get'/'handle'/'process'-style method with no same-file caller to anchor
+    to, the more of them get swept in as false-positive-reachable at once.
+    This is why entrypoint-heavy, naming-convention-heavy codebases (Django/
+    DRF class-based views all defining get/post/...) are the worst case --
+    it's also why REGISTRATION_CALL_NAMES / class-based-view detection
+    (see callgraph.py) matter: they let *more* calls resolve via same-file
+    or explicit registration instead of ever reaching this fallback.
+    """
+    write(tmp_path, "main.py", """
+@app.route("/x")
+def entry():
+    return handle()
+""")
+    n_unrelated = 5
+    for i in range(n_unrelated):
+        write(tmp_path, f"unrelated_{i}.py", f"""
+import risky_pkg
+
+def handle():
+    return risky_pkg.do_thing()  # none of these are actually called by entry()
+""")
+    graph = build_project_graph(tmp_path)
+    reachable = find_reachable_users(graph, "risky_pkg")
+    # every one of the N unrelated same-named functions is (wrongly) swept in
+    assert len(reachable) == n_unrelated
+
+
 def test_module_level_usage_in_entrypoint_file_is_reachable(tmp_path: Path):
     """Regression: `app = Flask(__name__)` at top of file was previously
     invisible to usage tracking entirely (only function bodies were scanned)."""
