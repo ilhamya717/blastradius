@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: blastradius
+Version: 0.1.0
+Summary: Supply-chain blast radius simulator: reachability-aware SCA for Python projects
+Requires-Python: >=3.9
+Requires-Dist: requests>=2.31
+Requires-Dist: packaging>=23.0
+Requires-Dist: rich>=13.0
