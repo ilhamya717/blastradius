@@ -53,6 +53,12 @@ class _FileVisitor(ast.NodeVisitor):
         self.import_alias_to_module: dict[str, str] = {}
         self.module_level_has_argparse = False
         self._func_stack: list[FuncNode] = []
+        self._class_stack: list[str] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef):
+        self._class_stack.append(node.name)
+        self.generic_visit(node)
+        self._class_stack.pop()
 
     def visit_Import(self, node: ast.Import):
         for alias in node.names:
@@ -70,7 +76,10 @@ class _FileVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _handle_func(self, node):
-        qualname = f"{self.file}:{node.name}"
+        # include enclosing class name so e.g. ClassA.get and ClassB.get in the
+        # same file don't collide into one node during call resolution
+        scope = ".".join(self._class_stack + [node.name])
+        qualname = f"{self.file}:{scope}"
         fn = FuncNode(qualname=qualname, file=self.file, lineno=node.lineno)
 
         for dec in getattr(node, "decorator_list", []):
@@ -176,7 +185,16 @@ def find_reachable_users(graph: ProjectGraph, module_name: str) -> list[FuncNode
         visited_qn.add(fn.qualname)
         reachable.add(fn.qualname)
         for called_name in fn.calls:
-            for callee_qn in graph.by_bare_name.get(called_name, ()):
+            candidates = graph.by_bare_name.get(called_name, ())
+            # prefer same-file candidates: a bare call almost always resolves
+            # to something in scope (same file/class) rather than a same-named
+            # function in an unrelated file. Only fall back to every
+            # same-named function project-wide when nothing local matches --
+            # that fallback is deliberately permissive (over-approximates
+            # reachability) since missing a real call is worse than a false one.
+            same_file = [qn for qn in candidates if graph.funcs[qn].file == fn.file]
+            targets = same_file or candidates
+            for callee_qn in targets:
                 if callee_qn not in visited_qn:
                     frontier.append(graph.funcs[callee_qn])
 
