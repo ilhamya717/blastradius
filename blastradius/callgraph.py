@@ -128,6 +128,10 @@ class _FileVisitor(ast.NodeVisitor):
         self.import_alias_to_module: dict[str, str] = {}
         self._class_stack: list[str] = []
         self._view_class_stack: list[bool] = []  # parallels _class_stack
+        # combined class+function nesting, used only for qualname disambiguation
+        # (see _handle_func) -- e.g. two same-named closures nested inside two
+        # different enclosing functions must not collide into one FuncNode.
+        self._scope_stack: list[str] = []
 
         # module-level ("top of file") scope always sits at the bottom of the
         # stack, so any usage/call outside a function body attributes there
@@ -145,7 +149,9 @@ class _FileVisitor(ast.NodeVisitor):
         )
         self._class_stack.append(node.name)
         self._view_class_stack.append(is_view)
+        self._scope_stack.append(node.name)
         self.generic_visit(node)
+        self._scope_stack.pop()
         self._view_class_stack.pop()
         self._class_stack.pop()
 
@@ -167,10 +173,16 @@ class _FileVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _handle_func(self, node):
-        # include enclosing class name so e.g. ClassA.get and ClassB.get in the
-        # same file don't collide into one node during call resolution
-        scope = ".".join(self._class_stack + [node.name])
+        # include full enclosing class+function nesting so e.g. ClassA.get vs
+        # ClassB.get, or two same-named closures nested in two different
+        # enclosing functions, don't collide into one node
+        scope = ".".join(self._scope_stack + [node.name])
         qualname = f"{self.file}:{scope}"
+        if qualname in self.graph.funcs:
+            # residual collision (e.g. two branches of an if/else both define
+            # a same-named nested function at the same nesting path) -- still
+            # disambiguate rather than silently overwriting the earlier node
+            qualname = f"{qualname}@{node.lineno}"
         fn = FuncNode(qualname=qualname, file=self.file, lineno=node.lineno)
 
         if not self.is_test_file:
@@ -196,7 +208,9 @@ class _FileVisitor(ast.NodeVisitor):
         self.graph.by_bare_name.setdefault(node.name, set()).add(qualname)
 
         self._func_stack.append(fn)
+        self._scope_stack.append(node.name)
         self.generic_visit(node)
+        self._scope_stack.pop()
         self._func_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef):

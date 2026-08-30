@@ -346,6 +346,66 @@ urlpatterns = [
     assert reachable == {"views.py:index"}
 
 
+def test_nested_closure_with_decorator_is_entrypoint(tmp_path: Path):
+    """A route decorator on a function defined inside a factory function
+    (a common pattern: `def make_app(): ... @app.route(...) def h(): ...`)
+    must still be detected as an entrypoint."""
+    write(tmp_path, "app.py", """
+import risky_pkg
+
+def make_app():
+    app = object()
+
+    @app.route("/x")
+    def nested_handler():
+        return risky_pkg.do_thing()
+
+    return app
+""")
+    graph = build_project_graph(tmp_path)
+    fn = graph.funcs["app.py:make_app.nested_handler"]
+    assert fn.is_entrypoint
+    reachable = {f.qualname for f in find_reachable_users(graph, "risky_pkg")}
+    assert reachable == {"app.py:make_app.nested_handler"}
+
+
+def test_same_named_closures_in_different_enclosing_functions_do_not_collide(tmp_path: Path):
+    """Regression: two same-named nested closures inside two DIFFERENT
+    enclosing functions used to collide into a single FuncNode -- the
+    second one silently overwrote the first (data loss, not just a
+    reachability mixup), since qualname scoping only accounted for
+    enclosing classes, not enclosing functions."""
+    write(tmp_path, "app.py", """
+import risky_pkg
+
+def make_app():
+    app = object()
+
+    @app.route("/x")
+    def nested_handler():
+        return risky_pkg.do_thing()
+
+    return app
+
+def make_app_2():
+    app2 = object()
+
+    @app2.route("/y")
+    def nested_handler():
+        return risky_pkg.do_other_thing()
+
+    return app2
+""")
+    graph = build_project_graph(tmp_path)
+    assert "app.py:make_app.nested_handler" in graph.funcs
+    assert "app.py:make_app_2.nested_handler" in graph.funcs
+    assert graph.funcs["app.py:make_app.nested_handler"].calls == {"route", "do_thing"}
+    assert graph.funcs["app.py:make_app_2.nested_handler"].calls == {"route", "do_other_thing"}
+
+    reachable = {f.qualname for f in find_reachable_users(graph, "risky_pkg")}
+    assert reachable == {"app.py:make_app.nested_handler", "app.py:make_app_2.nested_handler"}
+
+
 def test_syntax_error_file_is_skipped_not_fatal(tmp_path: Path):
     write(tmp_path, "broken.py", "def f(:\n    pass")
     write(tmp_path, "ok.py", """
