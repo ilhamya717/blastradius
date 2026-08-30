@@ -46,6 +46,10 @@ def main() -> None:
              "--baseline (and is ignored with --update-baseline). Use instead of --fail-on in CI "
              "once a baseline exists, so review is only demanded for what actually changed.",
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Bypass the on-disk OSV.dev response cache and query fresh for every dependency.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress messages (still prints the report).")
     args = parser.parse_args()
 
@@ -67,7 +71,7 @@ def main() -> None:
     graph = build_project_graph(project_root)
     log(f"Parsed {len(graph.funcs)} functions across the project.")
 
-    entries = build_report(deps, graph)
+    entries = build_report(deps, graph, use_cache=not args.no_cache)
 
     if args.output == "json":
         rendered = to_json(entries)

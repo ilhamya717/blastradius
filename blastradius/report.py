@@ -43,14 +43,14 @@ class BlastRadiusEntry:
         return "low"               # vulnerable but declared/unused in scanned code
 
 
-def build_report(deps: list[Dependency], graph: ProjectGraph) -> list[BlastRadiusEntry]:
+def build_report(deps: list[Dependency], graph: ProjectGraph, *, use_cache: bool = True) -> list[BlastRadiusEntry]:
     from .vulndb import query_vulnerabilities
 
     entries = []
     for dep in deps:
         vulns: list[Vulnerability] = []
         try:
-            vulns = query_vulnerabilities(dep.name, dep.version)
+            vulns = query_vulnerabilities(dep.name, dep.version, use_cache=use_cache)
         except RuntimeError as exc:
             console.print(f"[yellow]warn:[/yellow] {exc}")
 

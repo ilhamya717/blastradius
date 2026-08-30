@@ -39,6 +39,11 @@ pip install -e .
 blastradius /path/to/project
 ```
 
+OSV.dev lookups are cached to disk for 24h by default (`~/.cache/blastradius/osv/`,
+override with `$BLASTRADIUS_CACHE_DIR`) — a repeat scan of the same project
+is typically 10-20x faster and doesn't re-hit OSV for every dependency
+every run. Pass `--no-cache` to always query fresh.
+
 JSON output for tooling, and a `--fail-on` severity gate:
 
 ```
