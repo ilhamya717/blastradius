@@ -7,12 +7,44 @@ resolution beyond imports) -- the goal is a useful signal, not soundness.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Test files commonly use decorators/method names that collide with entrypoint
+# markers for unrelated reasons -- @patch is unittest.mock, not an HTTP PATCH
+# route; a Test*Case class named e.g. *View just by coincidence; etc. Treat
+# test files as never contributing entrypoints (they're still fully parsed
+# for calls/usage, just not treated as reachability roots).
+_TEST_FILE_RE = re.compile(r"(^|[\\/])tests?[\\/]|(^|[\\/])test_[^\\/]*\.py$|_test\.py$", re.IGNORECASE)
+
+
+def _is_test_file(rel_path: str) -> bool:
+    return bool(_TEST_FILE_RE.search(rel_path))
+
 ENTRYPOINT_DECORATORS = {
-    "route", "get", "post", "put", "delete", "patch",  # Flask/FastAPI/Starlette
-    "websocket", "task", "command", "cli",              # Celery/Click
+    "route", "get", "post", "put", "delete", "patch", "head", "options",  # Flask/FastAPI/Starlette
+    "api_route", "websocket", "on_event", "middleware",                   # FastAPI
+    "before_request", "after_request", "teardown_request", "errorhandler",  # Flask hooks (still process user input)
+    "task", "command", "cli",                                            # Celery/Click
+    "action",                                                            # DRF @action on a ViewSet method
+}
+
+# HTTP-verb-named methods on a class-based view are entrypoints even with no
+# decorator at all (Flask MethodView, Django View/APIView, DRF ViewSet).
+HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+# DRF ViewSet actions map to HTTP verbs via the router, not a decorator/method-name match.
+DRF_VIEWSET_ACTIONS = {"list", "retrieve", "create", "update", "partial_update", "destroy"}
+CLASS_BASED_VIEW_METHODS = HTTP_METHOD_NAMES | DRF_VIEWSET_ACTIONS
+
+# A call to one of these is a URL/route registration -- any function or
+# `module.func` referenced as an argument is a view, whether or not it's
+# decorated (Flask app.add_url_rule(...), FastAPI router.add_api_route(...),
+# Django path()/re_path()/url() in urlpatterns).
+REGISTRATION_CALL_NAMES = {
+    "add_url_rule", "add_api_route", "add_route",
+    "add_get", "add_post", "add_put", "add_delete", "add_patch",
+    "path", "re_path", "url",
 }
 
 
@@ -38,6 +70,10 @@ class ProjectGraph:
     # (top-of-file) code that executes on import, not on being called.
     file_imports: dict[str, set[str]] = field(default_factory=dict)
     _raw_imports: dict[str, list[tuple]] = field(default_factory=dict, repr=False)
+    # file -> bare names referenced as arguments to a URL/route registration
+    # call in that file (e.g. add_url_rule('/x', view_func=my_view)) --
+    # resolved against by_bare_name after the whole project is parsed.
+    _raw_registrations: dict[str, set[str]] = field(default_factory=dict, repr=False)
     _reachable_files_cache: set[str] | None = field(default=None, repr=False)
 
     def reachable_files(self) -> set[str]:
@@ -69,13 +105,29 @@ def _decorator_name(dec: ast.expr) -> str | None:
     return None
 
 
+def _base_class_name(base: ast.expr) -> str | None:
+    if isinstance(base, ast.Name):
+        return base.id
+    if isinstance(base, ast.Attribute):
+        return base.attr
+    return None
+
+
+def _is_view_base(name: str) -> bool:
+    # covers View, APIView, GenericAPIView, ListView, DetailView, MethodView,
+    # TemplateView, ViewSet, ModelViewSet, GenericViewSet, ReadOnlyModelViewSet...
+    return name.endswith("View") or name.endswith("ViewSet")
+
+
 class _FileVisitor(ast.NodeVisitor):
     def __init__(self, file: str, graph: ProjectGraph):
         self.file = file
+        self.is_test_file = _is_test_file(file)
         self.graph = graph
         # alias -> top-level module name, e.g. "np" -> "numpy", "requests" -> "requests"
         self.import_alias_to_module: dict[str, str] = {}
         self._class_stack: list[str] = []
+        self._view_class_stack: list[bool] = []  # parallels _class_stack
 
         # module-level ("top of file") scope always sits at the bottom of the
         # stack, so any usage/call outside a function body attributes there
@@ -87,8 +139,14 @@ class _FileVisitor(ast.NodeVisitor):
         self._func_stack: list[FuncNode] = [module_node]
 
     def visit_ClassDef(self, node: ast.ClassDef):
+        is_view = any(
+            (base_name := _base_class_name(b)) and _is_view_base(base_name)
+            for b in node.bases
+        )
         self._class_stack.append(node.name)
+        self._view_class_stack.append(is_view)
         self.generic_visit(node)
+        self._view_class_stack.pop()
         self._class_stack.pop()
 
     def visit_Import(self, node: ast.Import):
@@ -115,15 +173,24 @@ class _FileVisitor(ast.NodeVisitor):
         qualname = f"{self.file}:{scope}"
         fn = FuncNode(qualname=qualname, file=self.file, lineno=node.lineno)
 
-        for dec in getattr(node, "decorator_list", []):
-            dname = _decorator_name(dec)
-            if dname in ENTRYPOINT_DECORATORS:
-                fn.is_entrypoint = True
-                fn.entrypoint_reason = f"@{dname} decorator"
+        if not self.is_test_file:
+            for dec in getattr(node, "decorator_list", []):
+                dname = _decorator_name(dec)
+                if dname in ENTRYPOINT_DECORATORS:
+                    fn.is_entrypoint = True
+                    fn.entrypoint_reason = f"@{dname} decorator"
 
-        if node.name == "main":
-            fn.is_entrypoint = True
-            fn.entrypoint_reason = "function named 'main'"
+            if node.name == "main":
+                fn.is_entrypoint = True
+                fn.entrypoint_reason = "function named 'main'"
+
+            if (
+                not fn.is_entrypoint
+                and self._view_class_stack and self._view_class_stack[-1]
+                and node.name in CLASS_BASED_VIEW_METHODS
+            ):
+                fn.is_entrypoint = True
+                fn.entrypoint_reason = f"HTTP method on class-based view ({self._class_stack[-1]})"
 
         self.graph.funcs[qualname] = fn
         self.graph.by_bare_name.setdefault(node.name, set()).add(qualname)
@@ -152,16 +219,27 @@ class _FileVisitor(ast.NodeVisitor):
             fname = None
             if isinstance(node.func, ast.Name):
                 fname = node.func.id
-                if fname == "ArgumentParser":
+                if fname == "ArgumentParser" and not self.is_test_file:
                     self._func_stack[-1].is_entrypoint = True
                     self._func_stack[-1].entrypoint_reason = "uses argparse.ArgumentParser"
             elif isinstance(node.func, ast.Attribute):
                 fname = node.func.attr
-                if fname == "ArgumentParser":
+                if fname == "ArgumentParser" and not self.is_test_file:
                     self._func_stack[-1].is_entrypoint = True
                     self._func_stack[-1].entrypoint_reason = "uses argparse.ArgumentParser"
             if fname:
                 self._func_stack[-1].calls.add(fname)
+
+            reg_name = fname if (fname in REGISTRATION_CALL_NAMES and not self.is_test_file) else None
+            if reg_name:
+                for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                    ref = None
+                    if isinstance(arg, ast.Name):
+                        ref = arg.id
+                    elif isinstance(arg, ast.Attribute):
+                        ref = arg.attr  # e.g. `views.my_view`
+                    if ref:
+                        self.graph._raw_registrations.setdefault(self.file, set()).add(ref)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If):
@@ -214,6 +292,22 @@ def _resolve_relative_import(project_root: Path, current_file_rel: str, level: i
     return str(candidate.relative_to(project_root)) if candidate.exists() else None
 
 
+def _resolve_registrations(graph: ProjectGraph) -> None:
+    """Mark functions referenced in a URL/route registration call as
+    entrypoints, even though they're never actually *called* by name in the
+    call-graph sense (the framework calls them at request time)."""
+    for file, names in graph._raw_registrations.items():
+        for name in names:
+            candidates = graph.by_bare_name.get(name, ())
+            same_file = [qn for qn in candidates if graph.funcs[qn].file == file]
+            targets = same_file or candidates
+            for qn in targets:
+                fn = graph.funcs[qn]
+                if not fn.is_entrypoint:
+                    fn.is_entrypoint = True
+                    fn.entrypoint_reason = "referenced in a URL/route registration call"
+
+
 def _resolve_file_imports(project_root: Path, graph: ProjectGraph) -> None:
     for file, entries in graph._raw_imports.items():
         resolved: set[str] = set()
@@ -249,7 +343,9 @@ def build_project_graph(project_root: Path, exclude_dirs: set[str] | None = None
             continue
         rel = str(py_file.relative_to(project_root))
         _FileVisitor(rel, graph).visit(tree)
+    _resolve_registrations(graph)
     _resolve_file_imports(project_root, graph)
+    graph._reachable_files_cache = None  # entrypoints may have changed above
     return graph
 
 
