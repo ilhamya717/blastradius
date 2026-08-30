@@ -18,13 +18,14 @@ ENTRYPOINT_DECORATORS = {
 
 @dataclass
 class FuncNode:
-    qualname: str          # "path/to/file.py:funcname"
+    qualname: str          # "path/to/file.py:funcname" (or "path/to/file.py:__module__")
     file: str
     lineno: int
     calls: set[str] = field(default_factory=set)        # other qualnames or bare names called
     uses_modules: set[str] = field(default_factory=set)  # top-level module names referenced
     is_entrypoint: bool = False
     entrypoint_reason: str | None = None
+    is_module_scope: bool = False  # True for the synthetic "top of file" node
 
 
 @dataclass
@@ -32,6 +33,29 @@ class ProjectGraph:
     funcs: dict[str, FuncNode] = field(default_factory=dict)
     # bare function name -> set of qualnames (for approximate call resolution)
     by_bare_name: dict[str, set[str]] = field(default_factory=dict)
+    # file -> set of other project files it locally imports (resolved from
+    # import statements), used to propagate reachability into module-level
+    # (top-of-file) code that executes on import, not on being called.
+    file_imports: dict[str, set[str]] = field(default_factory=dict)
+    _raw_imports: dict[str, list[tuple]] = field(default_factory=dict, repr=False)
+    _reachable_files_cache: set[str] | None = field(default=None, repr=False)
+
+    def reachable_files(self) -> set[str]:
+        """Files whose top-level code is known to execute: any file containing
+        a detected entrypoint, plus anything transitively imported from one."""
+        if self._reachable_files_cache is not None:
+            return self._reachable_files_cache
+        root_files = {fn.file for fn in self.funcs.values() if fn.is_entrypoint}
+        reachable: set[str] = set()
+        frontier = list(root_files)
+        while frontier:
+            f = frontier.pop()
+            if f in reachable:
+                continue
+            reachable.add(f)
+            frontier.extend(self.file_imports.get(f, ()))
+        self._reachable_files_cache = reachable
+        return reachable
 
 
 def _decorator_name(dec: ast.expr) -> str | None:
@@ -51,9 +75,16 @@ class _FileVisitor(ast.NodeVisitor):
         self.graph = graph
         # alias -> top-level module name, e.g. "np" -> "numpy", "requests" -> "requests"
         self.import_alias_to_module: dict[str, str] = {}
-        self.module_level_has_argparse = False
-        self._func_stack: list[FuncNode] = []
         self._class_stack: list[str] = []
+
+        # module-level ("top of file") scope always sits at the bottom of the
+        # stack, so any usage/call outside a function body attributes there
+        # instead of being silently dropped.
+        module_node = FuncNode(
+            qualname=f"{file}:__module__", file=file, lineno=1, is_module_scope=True,
+        )
+        graph.funcs[module_node.qualname] = module_node
+        self._func_stack: list[FuncNode] = [module_node]
 
     def visit_ClassDef(self, node: ast.ClassDef):
         self._class_stack.append(node.name)
@@ -65,6 +96,7 @@ class _FileVisitor(ast.NodeVisitor):
             top = alias.name.split(".")[0]
             local = alias.asname or alias.name.split(".")[0]
             self.import_alias_to_module[local] = top
+            self.graph._raw_imports.setdefault(self.file, []).append(("import", alias.name))
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
@@ -73,6 +105,7 @@ class _FileVisitor(ast.NodeVisitor):
             for alias in node.names:
                 local = alias.asname or alias.name
                 self.import_alias_to_module[local] = top
+        self.graph._raw_imports.setdefault(self.file, []).append(("from", node.level, node.module))
         self.generic_visit(node)
 
     def _handle_func(self, node):
@@ -150,6 +183,59 @@ class _FileVisitor(ast.NodeVisitor):
             self.generic_visit(node)
 
 
+def _resolve_absolute_import(project_root: Path, dotted: str) -> str | None:
+    """`import a.b.c` / `from a.b.c import x` -> project-relative file, if it's
+    actually part of this project (external packages simply won't exist here)."""
+    parts = dotted.split(".")
+    for candidate in (
+        project_root.joinpath(*parts).with_suffix(".py"),
+        project_root.joinpath(*parts, "__init__.py"),
+    ):
+        if candidate.exists():
+            return str(candidate.relative_to(project_root))
+    return None
+
+
+def _resolve_relative_import(project_root: Path, current_file_rel: str, level: int, module: str | None) -> str | None:
+    """`from . import x` / `from .mod import y` / `from ..pkg.mod import y`."""
+    target_dir = (project_root / current_file_rel).parent
+    for _ in range(level - 1):
+        target_dir = target_dir.parent
+    if module:
+        parts = module.split(".")
+        for candidate in (
+            target_dir.joinpath(*parts).with_suffix(".py"),
+            target_dir.joinpath(*parts, "__init__.py"),
+        ):
+            if candidate.exists():
+                return str(candidate.relative_to(project_root))
+        return None
+    candidate = target_dir / "__init__.py"
+    return str(candidate.relative_to(project_root)) if candidate.exists() else None
+
+
+def _resolve_file_imports(project_root: Path, graph: ProjectGraph) -> None:
+    for file, entries in graph._raw_imports.items():
+        resolved: set[str] = set()
+        for entry in entries:
+            try:
+                if entry[0] == "import":
+                    target = _resolve_absolute_import(project_root, entry[1])
+                else:  # "from"
+                    _, level, module = entry
+                    target = (
+                        _resolve_relative_import(project_root, file, level, module)
+                        if level
+                        else (_resolve_absolute_import(project_root, module) if module else None)
+                    )
+            except (ValueError, OSError):
+                target = None
+            if target and target != file:
+                resolved.add(target)
+        if resolved:
+            graph.file_imports[file] = resolved
+
+
 def build_project_graph(project_root: Path, exclude_dirs: set[str] | None = None) -> ProjectGraph:
     exclude_dirs = exclude_dirs or {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
     graph = ProjectGraph()
@@ -163,6 +249,7 @@ def build_project_graph(project_root: Path, exclude_dirs: set[str] | None = None
             continue
         rel = str(py_file.relative_to(project_root))
         _FileVisitor(rel, graph).visit(tree)
+    _resolve_file_imports(project_root, graph)
     return graph
 
 
@@ -198,7 +285,16 @@ def find_reachable_users(graph: ProjectGraph, module_name: str) -> list[FuncNode
                 if callee_qn not in visited_qn:
                     frontier.append(graph.funcs[callee_qn])
 
-    return [fn for fn in direct_users if fn.qualname in reachable]
+    # module-level ("top of file") usage isn't reached by a call at all -- it
+    # runs as a side effect of the file being imported. Credit it separately
+    # via the file-level import graph rooted at files that hold an entrypoint.
+    reachable_files = graph.reachable_files()
+
+    return [
+        fn for fn in direct_users
+        if fn.qualname in reachable
+        or (fn.is_module_scope and fn.file in reachable_files)
+    ]
 
 
 def all_users(graph: ProjectGraph, module_name: str) -> list[FuncNode]:

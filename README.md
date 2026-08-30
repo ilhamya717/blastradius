@@ -42,13 +42,18 @@ blastradius /path/to/project
 ## Limitations (read before trusting the output)
 
 This is a **heuristic v0**, not a sound analysis:
-- No cross-file alias tracking beyond direct imports; no type inference.
-- Call graph resolution is by bare function name (can over- or
-  under-approximate reachability — two functions named `run` in different
-  files are conflated).
+- No type inference. Call graph resolution is by bare function name, and
+  prefers a same-file match before falling back to a project-wide one, but
+  two same-named functions in the same file/class scope can still collide.
+- Module-level ("top of file") code is credited as reachable if its file
+  is transitively imported from a file containing an entrypoint — this
+  assumes every local `import`/`from` actually executes that file's
+  top-level code, which is true in normal Python but not under conditional
+  or lazy/deferred imports (e.g. inside a `try/except ImportError`, or an
+  import gated by a runtime flag).
 - OSV.dev vulnerability data is package-level, not function-level — "used"
-  means the module was referenced anywhere in a reachable function, not
-  that the specific vulnerable function was called.
+  means the module was referenced anywhere in a reachable function or at
+  module scope, not that the specific vulnerable function was called.
 - Dynamic dispatch (`getattr`, decorators that wrap unpredictably, plugin
   systems) is invisible to static `ast` analysis.
 
@@ -61,4 +66,5 @@ exploitable" — and treat `low`/`moderate` as "not yet disproven", not safe.
   specific patched functions when advisory data allows).
 - Cross-file type-aware call resolution (e.g. via `jedi` or a proper CPG).
 - JS/TS and Go ecosystem support.
-- CI mode: fail on new `critical` findings vs. a baseline.
+- Baseline diffing: fail CI only on *new* findings vs. a stored baseline,
+  not everything every run.

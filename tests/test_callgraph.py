@@ -123,6 +123,64 @@ def handle():
     )
 
 
+def test_module_level_usage_in_entrypoint_file_is_reachable(tmp_path: Path):
+    """Regression: `app = Flask(__name__)` at top of file was previously
+    invisible to usage tracking entirely (only function bodies were scanned)."""
+    write(tmp_path, "app.py", """
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/ping")
+def ping():
+    return "pong"
+""")
+    graph = build_project_graph(tmp_path)
+    users = all_users(graph, "flask")
+    assert any(fn.is_module_scope for fn in users)
+    reachable = find_reachable_users(graph, "flask")
+    assert any(fn.is_module_scope and fn.file == "app.py" for fn in reachable)
+
+
+def test_module_level_usage_reachable_via_import_chain(tmp_path: Path):
+    """A file with no entrypoint of its own is still reachable if it's
+    imported (directly or transitively) by a file that has one."""
+    write(tmp_path, "main.py", """
+from lib import helper
+
+@app.route("/x")
+def entry():
+    return helper()
+""")
+    write(tmp_path, "lib.py", """
+import risky_pkg
+
+CLIENT = risky_pkg.Client()  # module-level side effect
+
+def helper():
+    return "ok"
+""")
+    graph = build_project_graph(tmp_path)
+    reachable = find_reachable_users(graph, "risky_pkg")
+    assert any(fn.is_module_scope and fn.file == "lib.py" for fn in reachable)
+
+
+def test_module_level_usage_in_never_imported_file_is_not_reachable(tmp_path: Path):
+    write(tmp_path, "main.py", """
+@app.route("/x")
+def entry():
+    return "ok"
+""")
+    write(tmp_path, "orphan.py", """
+import risky_pkg
+
+CLIENT = risky_pkg.Client()
+""")
+    graph = build_project_graph(tmp_path)
+    assert all_users(graph, "risky_pkg")  # it's used...
+    assert find_reachable_users(graph, "risky_pkg") == []  # ...but orphan.py is never imported
+
+
 def test_syntax_error_file_is_skipped_not_fatal(tmp_path: Path):
     write(tmp_path, "broken.py", "def f(:\n    pass")
     write(tmp_path, "ok.py", """
