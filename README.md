@@ -92,6 +92,11 @@ blastradius . --baseline .blastradius-baseline.json --update-baseline
 blastradius . --baseline .blastradius-baseline.json --fail-on-new
 ```
 
+See [.github/workflows/blastradius.yml](.github/workflows/blastradius.yml)
+for a complete, runnable GitHub Actions workflow (it scans this repo
+itself, including the JS/TS helper setup step — copy it into a target
+project and adjust the two `TODO`s).
+
 This fails only when something actually changed for the worse: a package
 newly flagged, a new CVE disclosed on an already-flagged package, or a
 severity escalation (e.g. a package became reachable that wasn't before).

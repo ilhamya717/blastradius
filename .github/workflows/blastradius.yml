@@ -1,0 +1,63 @@
+name: blastradius supply-chain scan
+
+# This file scans blastradius's OWN repo as a working, runnable example --
+# copy it into a target project's .github/workflows/ and adjust the two
+# TODOs below to scan that project instead.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Only needed if the target project has JS/TS (package.json at its
+      # root) -- blastradius skips JS/TS analysis with a warning, not a
+      # hard failure, if Node.js isn't available.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # TODO: if scanning a project OTHER than blastradius itself, replace
+      # this block with: `pip install blastradius` (once published) or
+      # `pip install git+https://github.com/<you>/blastradius.git`
+      - name: Install blastradius (from this checkout)
+        run: pip install -e .
+
+      - name: Install JS/TS parser helper
+        run: |
+          cd blastradius/js_helper
+          npm install --no-audit --no-fund
+
+      # TODO: change `.` to the path of the project you actually want
+      # scanned, if it isn't the repo this workflow lives in.
+      - name: Run blastradius against the baseline
+        run: |
+          blastradius . \
+            --baseline .blastradius-baseline.json \
+            --fail-on-new \
+            --output json --out blastradius-report.json
+
+      - name: Upload full report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blastradius-report
+          path: blastradius-report.json
+
+# First-time setup for a new project (run locally, commit the result):
+#   blastradius . --baseline .blastradius-baseline.json --update-baseline
+#
+# When this workflow fails on a genuinely new/escalated finding you've
+# reviewed and accept, update the baseline the same way and commit it as
+# its own reviewed change -- see README.md's "CI mode: baseline diffing".

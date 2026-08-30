@@ -15,6 +15,11 @@ regardless of whether your code ever executes the vulnerable path.
 In a real audit (see below), 18 flagged dependencies is not 18 things to
 investigate this week. It's 2.
 
+This isn't Python-specific: the same reachability model applies to JS/TS
+projects (Express/Koa/Fastify route detection via `@babel/parser`), so a
+Node.js monorepo gets the same "2 out of 18" treatment, not just Python
+services.
+
 ## What "reachability-aware" actually means here
 
 Three independent signals, all from static analysis (no code execution):
@@ -61,6 +66,15 @@ not just assert it:
   have flagged `sqlparse` as high-priority regardless, forever.
 - **Flask** itself (83 files): zero findings, because its own dependencies
   are current. Fast (~7s) to confirm that, not just "trust us."
+- **Express.js** itself (JS/TS side, 141 files / 3,194 functions): also
+  zero findings for the same reason — current dependencies, confirmed in
+  ~44s rather than assumed. A synthetic sample app pinned to
+  `lodash@4.17.4` + `express@4.18.2` (both with real, known CVEs)
+  correctly separated a route handler that actually called the vulnerable
+  code (CRITICAL) from a dead-code function that imported the same
+  package but was never called from anywhere (excluded from the
+  reachable set) — the JS/TS analysis draws the same distinction the
+  Python side does, not a weaker approximation of it.
 
 ## What we are explicitly not claiming
 
