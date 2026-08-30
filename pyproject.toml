@@ -1,8 +1,10 @@
 [project]
 name = "blastradius"
 version = "0.1.0"
-description = "Supply-chain blast radius simulator: reachability-aware SCA for Python projects"
+description = "Reachability-aware supply-chain risk scanner (Python, JS/TS)"
 requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
