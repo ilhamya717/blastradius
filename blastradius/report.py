@@ -1,7 +1,8 @@
 """Combine dependency, vulnerability, and reachability data into a report."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 
 from rich.console import Console
 from rich.table import Table
@@ -22,9 +23,19 @@ class BlastRadiusEntry:
     reachable_users: list[str]  # qualnames reachable from an entrypoint
 
     @property
+    def version_unknown(self) -> bool:
+        return self.dependency.version is None
+
+    @property
     def severity(self) -> str:
         if not self.vulns:
             return "none"
+        if self.version_unknown:
+            # OSV was queried without a version pin -> vulns may span versions
+            # this project doesn't actually use. Don't let that inflate to
+            # "critical" on reachability alone; cap at "moderate" as a nudge
+            # to go verify the real installed/pinned version.
+            return "moderate" if (self.reachable_users or self.total_users) else "low"
         if self.reachable_users:
             return "critical"      # vulnerable AND reachable from user-facing code
         if self.total_users:
@@ -61,7 +72,7 @@ def build_report(deps: list[Dependency], graph: ProjectGraph) -> list[BlastRadiu
     return entries
 
 
-def print_report(entries: list[BlastRadiusEntry]) -> None:
+def print_report(entries: list[BlastRadiusEntry], console: Console = console) -> None:
     table = Table(title="Blast Radius Report", show_lines=False)
     table.add_column("Severity", style="bold")
     table.add_column("Package")
@@ -86,7 +97,7 @@ def print_report(entries: list[BlastRadiusEntry]) -> None:
         table.add_row(
             f"[{style_map[e.severity]}]{e.severity.upper()}[/{style_map[e.severity]}]",
             e.dependency.name,
-            e.dependency.version or "?",
+            (e.dependency.version or "unknown (unpinned)"),
             vuln_str or "-",
             used_str,
             reach_str,
@@ -99,3 +110,29 @@ def print_report(entries: list[BlastRadiusEntry]) -> None:
         console.print(f"\n[bold red]{n_critical} package(s) have vulnerable code reachable from an entrypoint.[/bold red]")
     else:
         console.print("\n[green]No vulnerable dependency was proven reachable from a detected entrypoint.[/green]")
+
+
+def to_json(entries: list[BlastRadiusEntry]) -> str:
+    """Serialize the report to JSON (full CVE ids, no truncation) for CI / tooling use."""
+    payload = []
+    for e in entries:
+        if e.severity == "none":
+            continue
+        payload.append(
+            {
+                "severity": e.severity,
+                "package": e.dependency.name,
+                "version": e.dependency.version,
+                "version_unknown": e.version_unknown,
+                "module": e.module,
+                "vulnerabilities": [asdict(v) for v in e.vulns],
+                "used_in_functions": e.total_users,
+                "reachable_from_entrypoint": e.reachable_users,
+            }
+        )
+    summary = {
+        "critical_count": sum(1 for e in entries if e.severity == "critical"),
+        "moderate_count": sum(1 for e in entries if e.severity == "moderate"),
+        "low_count": sum(1 for e in entries if e.severity == "low"),
+    }
+    return json.dumps({"summary": summary, "findings": payload}, indent=2)

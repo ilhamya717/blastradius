@@ -32,19 +32,20 @@ class Dependency:
         return [self.name.replace("-", "_")]
 
 
-_REQ_LINE_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
+_REQ_LINE_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(==\s*([A-Za-z0-9.!+*_-]+))?")
 
 
-def _parse_requirements_txt(path: Path) -> list[str]:
-    names = []
+def _parse_requirements_txt(path: Path) -> dict[str, str | None]:
+    """Return {name: pinned_version_or_None}, honoring '==' pins when present."""
+    pins: dict[str, str | None] = {}
     for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
+        line = raw.split("#", 1)[0].strip()  # strip trailing '# via ...' comments
+        if not line or line.startswith("-"):
             continue
         m = _REQ_LINE_RE.match(line)
         if m:
-            names.append(m.group(1))
-    return names
+            pins[m.group(1)] = m.group(3)
+    return pins
 
 
 def _parse_pyproject_toml(path: Path) -> list[str]:
@@ -66,23 +67,28 @@ def _parse_pyproject_toml(path: Path) -> list[str]:
 
 
 def discover_dependencies(project_root: Path) -> list[Dependency]:
-    """Find declared dependencies for the project and resolve installed versions."""
-    names: set[str] = set()
+    """Find declared dependencies. Prefers a requirements.txt '==' pin (the
+    version the project actually declares/ships with) over whatever happens
+    to be installed in the current environment -- those can differ a lot.
+    """
+    pinned: dict[str, str | None] = {}
 
     req_txt = project_root / "requirements.txt"
     if req_txt.exists():
-        names.update(_parse_requirements_txt(req_txt))
+        pinned.update(_parse_requirements_txt(req_txt))
 
     pyproject = project_root / "pyproject.toml"
     if pyproject.exists():
-        names.update(_parse_pyproject_toml(pyproject))
+        for name in _parse_pyproject_toml(pyproject):
+            pinned.setdefault(name, None)
 
     deps = []
-    for name in sorted(names):
-        version = None
-        try:
-            version = importlib_metadata.version(name)
-        except importlib_metadata.PackageNotFoundError:
-            pass
+    for name in sorted(pinned):
+        version = pinned[name]
+        if version is None:
+            try:
+                version = importlib_metadata.version(name)
+            except importlib_metadata.PackageNotFoundError:
+                pass
         deps.append(Dependency(name=name, version=version))
     return deps

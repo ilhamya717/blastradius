@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .callgraph import build_project_graph
-from .report import build_report, print_report
+from .report import build_report, print_report, to_json
 from .scanner import discover_dependencies
+
+_SEVERITY_RANK = {"none": 0, "low": 1, "moderate": 2, "critical": 3}
 
 
 def main() -> None:
@@ -14,21 +17,61 @@ def main() -> None:
         description="Reachability-aware supply-chain risk scanner for Python projects.",
     )
     parser.add_argument("path", nargs="?", default=".", help="Project root to scan (default: current dir)")
+    parser.add_argument(
+        "--output", choices=["table", "json"], default="table",
+        help="Report format. 'table' is human-readable (default); 'json' is untruncated, for tooling/CI.",
+    )
+    parser.add_argument(
+        "--out", type=str, default=None,
+        help="Write the report to this file instead of stdout (useful with --output json).",
+    )
+    parser.add_argument(
+        "--fail-on", choices=["critical", "moderate", "low"], default=None,
+        help="Exit with code 1 if any finding reaches this severity or higher. Intended for CI.",
+    )
+    parser.add_argument("--quiet", action="store_true", help="Suppress progress messages (still prints the report).")
     args = parser.parse_args()
 
     project_root = Path(args.path).resolve()
     if not project_root.exists():
         raise SystemExit(f"Path not found: {project_root}")
 
-    print(f"Scanning {project_root} ...")
+    def log(msg: str) -> None:
+        if not args.quiet:
+            print(msg, file=sys.stderr)
+
+    log(f"Scanning {project_root} ...")
     deps = discover_dependencies(project_root)
-    print(f"Found {len(deps)} declared dependencies.")
+    log(f"Found {len(deps)} declared dependencies.")
 
     graph = build_project_graph(project_root)
-    print(f"Parsed {len(graph.funcs)} functions across the project.")
+    log(f"Parsed {len(graph.funcs)} functions across the project.")
 
     entries = build_report(deps, graph)
-    print_report(entries)
+
+    if args.output == "json":
+        rendered = to_json(entries)
+        if args.out:
+            Path(args.out).write_text(rendered, encoding="utf-8")
+            log(f"Wrote JSON report to {args.out}")
+        else:
+            print(rendered)
+    else:
+        if args.out:
+            from rich.console import Console
+            with open(args.out, "w", encoding="utf-8") as f:
+                file_console = Console(file=f, width=200)
+                print_report(entries, console=file_console)
+            log(f"Wrote table report to {args.out}")
+        else:
+            print_report(entries)
+
+    if args.fail_on:
+        threshold = _SEVERITY_RANK[args.fail_on]
+        worst = max((_SEVERITY_RANK[e.severity] for e in entries), default=0)
+        if worst >= threshold:
+            log(f"\nFAIL: found severity >= '{args.fail_on}'.")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
