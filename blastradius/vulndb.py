@@ -67,21 +67,53 @@ def _write_cache(cache_dir: Path, package: str, version: str | None, ecosystem: 
         pass  # caching is a best-effort speedup, never a hard requirement
 
 
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    """Parse a 429/503 response's Retry-After header (seconds or HTTP-date)."""
+    header = resp.headers.get("Retry-After")
+    if not header:
+        return None
+    try:
+        return max(0.0, float(header))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(header)
+        if dt is not None:
+            import datetime
+            now = datetime.datetime.now(dt.tzinfo or datetime.timezone.utc)
+            return max(0.0, (dt - now).total_seconds())
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _query_osv(package: str, version: str | None, ecosystem: str = "PyPI") -> list[Vulnerability]:
     payload: dict = {"package": {"name": package, "ecosystem": ecosystem}}
     if version:
         payload["version"] = version
 
     last_exc: Exception | None = None
+    resp = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
             resp = requests.post(OSV_QUERY_URL, json=payload, timeout=10)
-            resp.raise_for_status()
+            resp.raise_for_status()  # -> HTTPError on any 4xx/5xx, classified as retryable or not below
             break
         except requests.RequestException as exc:
             last_exc = exc
+            is_response_error = isinstance(exc, requests.HTTPError) and exc.response is not None
+            status = exc.response.status_code if is_response_error else None
+            retryable = status is None or status == 429 or status >= 500  # network error, rate-limited, or server error
+            if not retryable:
+                raise RuntimeError(f"OSV query failed for {package}: {exc}") from exc
             if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_BACKOFF_SECONDS * (2 ** attempt))
+                wait = None
+                if status == 429 and exc.response is not None:
+                    wait = _retry_after_seconds(exc.response)
+                if wait is None:
+                    wait = _RETRY_BACKOFF_SECONDS * (2 ** attempt)
+                time.sleep(wait)
     else:
         raise RuntimeError(f"OSV query failed for {package} after {_MAX_RETRIES + 1} attempts: {last_exc}") from last_exc
 
