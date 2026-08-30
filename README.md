@@ -8,6 +8,10 @@ never touches. `blastradius` adds the missing question: **is the vulnerable
 package actually used, and is that usage reachable from a user-facing
 entrypoint** (an HTTP route, a CLI command, `if __name__ == "__main__"`)?
 
+See [DIFFERENTIATION.md](DIFFERENTIATION.md) for the detailed argument
+(with real numbers from real projects), if you're evaluating this against
+existence-based SCA tools.
+
 ## How it works
 
 1. **Scan** `requirements.txt` / `pyproject.toml` for declared dependencies
