@@ -1,13 +1,10 @@
 """JS/TS static analysis, mirroring callgraph.py's model exactly so
 report.py / baseline.py / the CLI work unchanged regardless of language.
 
-Parsing itself is delegated to a small Node.js helper (js_helper/parse.js)
-using @babel/parser, since there's no mature pure-Python JS/TS/JSX parser
-worth trusting here. This module only does the traversal -- same division
-of labor as callgraph.py using Python's own `ast` module directly.
-
-Requires Node.js on PATH (checked explicitly; raises a clear error if
-missing rather than failing deep inside a subprocess call).
+Parsing is delegated to a Node.js helper (js_helper/parse.js) using
+@babel/parser; this module only does the traversal, same division of
+labor as callgraph.py using Python's `ast` directly. Requires Node.js on
+PATH.
 """
 from __future__ import annotations
 
@@ -22,8 +19,7 @@ JS_HELPER_DIR = Path(__file__).parent / "js_helper"
 JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
 # Express/Koa/Fastify-style route registration: app.get('/x', handler) etc.
-# Attribute-based (like Python's decorator match) -- doesn't care what the
-# object is named (app, router, api, ...).
+# Doesn't care what the object is named (app, router, api, ...).
 ENTRYPOINT_METHODS = {"get", "post", "put", "delete", "patch", "all", "route", "use"}
 
 
@@ -66,25 +62,8 @@ def _parse_files(files: list[Path]) -> dict[str, dict]:
             continue
         if "ast" in entry:
             results[entry["file"]] = entry["ast"]
-        # entries with "error" (syntax errors, unsupported syntax) are just skipped,
-        # mirroring how callgraph.py skips a .py file that fails to parse.
+        # entries with "error" are skipped, like a .py SyntaxError
     return results
-
-
-def _iter_children(node):
-    """Babel AST nodes are plain dicts; walk every dict/list-valued field."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key in ("loc", "start", "end", "range", "leadingComments", "trailingComments"):
-                continue
-            yield from _iter_children(value)
-        return
-    if isinstance(node, list):
-        for item in node:
-            yield from _iter_children(item)
-        return
-    if isinstance(node, dict) and node.get("type"):
-        yield node
 
 
 def _member_name(node: dict) -> str | None:
@@ -120,9 +99,7 @@ class _JSFileVisitor:
 
     def _push_func(self, name: str, lineno: int) -> FuncNode:
         qualname = f"{self.file}:{name}"
-        # two anonymous/duplicate-named functions at the same nominal name are
-        # disambiguated by line number, same spirit as Python's class-scoping fix
-        if qualname in self.graph.funcs:
+        if qualname in self.graph.funcs:  # disambiguate by line number
             qualname = f"{self.file}:{name}@{lineno}"
         fn = FuncNode(qualname=qualname, file=self.file, lineno=lineno)
         self.graph.funcs[qualname] = fn
@@ -179,17 +156,13 @@ class _JSFileVisitor:
         if fname:
             self._func_stack[-1].calls.add(fname)
 
-        # Visit the whole callee subtree (not just, say, `.object` for a
-        # MemberExpression) so a nested/chained callee -- e.g. the inner
-        # CallExpression in `_.template(x)(y)` -- still gets walked instead
-        # of silently dropped.
+        # visit the whole callee, not just `.object`, so a chained callee
+        # like `_.template(x)(y)` still gets walked
         self.visit(callee)
 
-        # Express-style registration: app.get('/x', handler) / router.use(handler).
-        # Handled here (rather than via the default _generic descent) so an
-        # inline function literal argument can be marked as an entrypoint at
-        # the moment its FuncNode is created -- by the time _generic() would
-        # otherwise visit it, we've lost the "this is a route arg" context.
+        # app.get('/x', handler) / router.use(handler) -- handled here so an
+        # inline function argument can be marked entrypoint as its FuncNode
+        # is created, before that "this is a route arg" context is lost
         is_registration = callee.get("type") == "MemberExpression" and _member_name(callee) in ENTRYPOINT_METHODS
         for arg in node.get("arguments", []):
             if is_registration and arg.get("type") == "Identifier":
@@ -247,20 +220,16 @@ class _JSFileVisitor:
         name = (node.get("id") or {}).get("name") or self._fresh_anon_name()
         self._handle_function_body(node, name)
 
-    # a `const handler = () => {...}` / `const handler = function () {...}`
-    # binds the function to a *bare name* other than what it'd otherwise get
-    # -- rename the just-created node's registration so bare-name call
-    # resolution (and route-registration-by-name) can find it as `handler`.
+    # `const handler = () => {...}` binds the function to a bare name --
+    # register it as such so call resolution / route-registration can find it.
     def _on_VariableDeclarator(self, node: dict) -> None:
         init = node.get("init") or {}
         var_name = (node.get("id") or {}).get("name")
 
-        # `const _ = require("lodash")` -- without this, only the require()
-        # call site itself (often at module scope) registers as a "use";
-        # every later `_.merge(...)` reference inside a function body
-        # wouldn't, since Identifier lookups depend on this alias mapping
-        # existing. Destructured requires (`const { merge } = require(...)`)
-        # aren't handled here -- id.type is ObjectPattern, not Identifier.
+        # `const _ = require("lodash")`: register the alias so later
+        # `_.merge(...)` calls count as usage too, not just this line.
+        # Destructured requires (`const { merge } = require(...)`) aren't
+        # handled -- id.type is ObjectPattern, not Identifier.
         if (
             var_name
             and init.get("type") == "CallExpression"
@@ -287,9 +256,7 @@ class _JSFileVisitor:
 
 
 def build_js_project_graph(project_root: Path, exclude_dirs: set[str] | None = None) -> ProjectGraph:
-    # must be absolute: file paths are handed to the Node subprocess, which
-    # runs with cwd=JS_HELPER_DIR -- a relative project_root would resolve
-    # against the wrong directory there and silently fail to parse anything.
+    # must be absolute -- the Node subprocess runs with a different cwd
     project_root = project_root.resolve()
     exclude_dirs = exclude_dirs or {".git", "node_modules", "dist", "build", ".next", "coverage"}
     graph = ProjectGraph()
@@ -301,11 +268,8 @@ def build_js_project_graph(project_root: Path, exclude_dirs: set[str] | None = N
     asts = _parse_files(files)
 
     if files and not asts:
-        # Every file failed to parse -- almost certainly a systemic problem
-        # (wrong cwd, Node/babel install issue) rather than N unrelated
-        # syntax errors. Surface it instead of silently returning an empty
-        # graph, which for a security tool would read as "nothing to see
-        # here" rather than "the scan didn't actually run."
+        # every file failed -- likely systemic (wrong cwd, missing deps), not
+        # N unrelated syntax errors, so warn instead of silently reporting clean
         import warnings
         warnings.warn(
             f"blastradius: 0/{len(files)} JS/TS files parsed successfully -- "

@@ -105,10 +105,8 @@ _NPM_VERSION_RANGE_PREFIX = re.compile(r"^[\^~>=<\s]+")
 
 def discover_js_dependencies(project_root: Path) -> list[Dependency]:
     """Parse package.json's dependencies/devDependencies. Prefers a locked
-    exact version from package-lock.json/npm-shrinkwrap.json when present
-    (package.json itself usually holds a range like "^4.18.0", not what's
-    actually installed) -- same "declared range vs. actual version" gap
-    that requirements.txt pinning solved on the Python side.
+    exact version from package-lock.json/npm-shrinkwrap.json over
+    package.json's range (e.g. "^4.18.0").
     """
     pkg_json = project_root / "package.json"
     if not pkg_json.exists():

@@ -1,10 +1,9 @@
 """Baseline diffing for CI: fail only on *new* risk, not everything every run.
 
-A baseline is a small JSON snapshot of the last-accepted report, keyed by
-package name. Re-running against it tells you what changed since: a newly
-flagged package, a newly-disclosed CVE on an already-flagged package, a
-severity escalation (e.g. a package became reachable that wasn't before),
-or a package that dropped out entirely (upgraded/removed -- good news).
+A baseline is a JSON snapshot of the last-accepted report, keyed by
+package. Diffing against it surfaces: a newly flagged package, a
+newly-disclosed CVE, a severity escalation, or a package that dropped
+out (upgraded/removed -- good news).
 """
 from __future__ import annotations
 

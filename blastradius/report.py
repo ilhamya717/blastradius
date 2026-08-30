@@ -31,10 +31,7 @@ class BlastRadiusEntry:
         if not self.vulns:
             return "none"
         if self.version_unknown:
-            # OSV was queried without a version pin -> vulns may span versions
-            # this project doesn't actually use. Don't let that inflate to
-            # "critical" on reachability alone; cap at "moderate" as a nudge
-            # to go verify the real installed/pinned version.
+            # unpinned query may span versions we don't actually use -- cap below critical
             return "moderate" if (self.reachable_users or self.total_users) else "low"
         if self.reachable_users:
             return "critical"      # vulnerable AND reachable from user-facing code

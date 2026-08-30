@@ -1,14 +1,8 @@
 #!/usr/bin/env node
-/**
- * Reads a list of file paths on stdin (one per line), parses each with
- * @babel/parser (JS/JSX/TS/TSX), and writes one JSON object per line to
- * stdout: {"file": "<path>", "ast": <babel-ast>} or {"file": "<path>", "error": "..."}.
- *
- * Kept deliberately dumb: no traversal logic here. The Python side
- * (blastradius/js_callgraph.py) walks the AST -- this script's only job is
- * "give me the tree," mirroring how build_project_graph() uses Python's
- * own `ast` module directly for .py files.
- */
+// Reads file paths on stdin (one per line), parses each with @babel/parser
+// (JS/JSX/TS/TSX), writes one JSON line per file to stdout:
+// {"file": ..., "ast": ...} or {"file": ..., "error": ...}. No traversal
+// here -- js_callgraph.py walks the AST on the Python side.
 const fs = require("fs");
 const readline = require("readline");
 const parser = require("@babel/parser");

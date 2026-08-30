@@ -1,9 +1,5 @@
-"""Query OSV.dev for known vulnerabilities affecting a PyPI package+version.
-
-Results are cached to disk (default: a project-local `.blastradius-cache/`,
-falling back to the user cache dir if that can't be created) since a
-project with 100+ dependencies means 100+ sequential OSV requests, and
-that data changes at "new CVE disclosed" pace, not "every scan" pace.
+"""Query OSV.dev for known vulnerabilities. Results are cached to disk
+(24h TTL by default) since a scan can mean 100+ sequential requests.
 """
 from __future__ import annotations
 
@@ -64,7 +60,7 @@ def _write_cache(cache_dir: Path, package: str, version: str | None, ecosystem: 
                    "vulns": [asdict(v) for v in vulns]}
         path.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
-        pass  # caching is a best-effort speedup, never a hard requirement
+        pass  # caching is best-effort
 
 
 def _retry_after_seconds(resp: requests.Response) -> float | None:
@@ -104,7 +100,7 @@ def _query_osv(package: str, version: str | None, ecosystem: str = "PyPI") -> li
             last_exc = exc
             is_response_error = isinstance(exc, requests.HTTPError) and exc.response is not None
             status = exc.response.status_code if is_response_error else None
-            retryable = status is None or status == 429 or status >= 500  # network error, rate-limited, or server error
+            retryable = status is None or status == 429 or status >= 500
             if not retryable:
                 raise RuntimeError(f"OSV query failed for {package}: {exc}") from exc
             if attempt < _MAX_RETRIES:
@@ -146,11 +142,9 @@ def query_vulnerabilities(
     cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
 ) -> list[Vulnerability]:
     """Return known OSV vulnerabilities for a package at a given version.
-    `ecosystem` is an OSV.dev ecosystem string -- "PyPI" or "npm" today.
-
-    If version is None, queries without a version pin (broader match --
-    see report.py's version_unknown handling, which deliberately doesn't
-    let that inflate severity).
+    `ecosystem` is an OSV.dev ecosystem string ("PyPI" or "npm"). If
+    version is None, queries unpinned (see report.py's version_unknown
+    handling, which caps severity for that case).
     """
     cache_dir = cache_dir or _default_cache_dir()
 
