@@ -39,6 +39,35 @@ pip install -e .
 blastradius /path/to/project
 ```
 
+JSON output for tooling, and a `--fail-on` severity gate:
+
+```
+blastradius /path/to/project --output json --out report.json
+blastradius /path/to/project --fail-on critical   # exit 1 if any CRITICAL finding
+```
+
+### CI mode: baseline diffing
+
+`--fail-on` re-fails on the same accepted-risk findings every run. Once a
+project has a known set of findings you've triaged and accepted (or just
+haven't gotten to yet), gate on **new** risk instead:
+
+```
+# once, to accept the current state:
+blastradius . --baseline .blastradius-baseline.json --update-baseline
+
+# in CI, every run after:
+blastradius . --baseline .blastradius-baseline.json --fail-on-new
+```
+
+This fails only when something actually changed for the worse: a package
+newly flagged, a new CVE disclosed on an already-flagged package, or a
+severity escalation (e.g. a package became reachable that wasn't before).
+A package dropping out of the report (upgraded/removed) is reported as
+`RESOLVED`, never a failure. Commit the baseline file alongside your code
+and update it deliberately (as its own reviewed change) when you've
+looked at a new finding and decided to accept it.
+
 ## Limitations (read before trusting the output)
 
 This is a **heuristic v0**, not a sound analysis:
@@ -66,5 +95,3 @@ exploitable" — and treat `low`/`moderate` as "not yet disproven", not safe.
   specific patched functions when advisory data allows).
 - Cross-file type-aware call resolution (e.g. via `jedi` or a proper CPG).
 - JS/TS and Go ecosystem support.
-- Baseline diffing: fail CI only on *new* findings vs. a stored baseline,
-  not everything every run.
