@@ -44,7 +44,10 @@ def _read_cache(cache_dir: Path, package: str, version: str | None, ecosystem: s
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if time.time() - data.get("cached_at", 0) > ttl:
+    # >= not >: with ttl=0 this must always be "expired" regardless of clock
+    # resolution (time.time() on Windows can return the same value across
+    # two calls a few ms apart, which made age == 0 == ttl slip through)
+    if time.time() - data.get("cached_at", 0) >= ttl:
         return None
     try:
         return [Vulnerability(**v) for v in data["vulns"]]
