@@ -1,5 +1,8 @@
 # blastradius
 
+[![tests](https://github.com/ilhamya717/blastradius/actions/workflows/tests.yml/badge.svg)](https://github.com/ilhamya717/blastradius/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Reachability-aware supply-chain risk scanner.**
 
 Most SCA tools (Dependabot, Snyk, `pip-audit`) tell you *"package X has CVE-Y"* —
