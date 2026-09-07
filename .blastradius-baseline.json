@@ -1,4 +1,63 @@
 {
-  "packages": {},
+  "packages": {
+    "express:express": {
+      "module": "express",
+      "package": "express",
+      "severity": "critical",
+      "version": "4.18.2",
+      "vuln_ids": [
+        "GHSA-qw6h-vgh9-j6wx",
+        "GHSA-rv95-896h-c2vc"
+      ]
+    },
+    "flask:flask": {
+      "module": "flask",
+      "package": "flask",
+      "severity": "critical",
+      "version": "2.0.0",
+      "vuln_ids": [
+        "GHSA-68rp-wp8r-4726",
+        "GHSA-m2qf-hxjv-5gpq",
+        "PYSEC-2023-62",
+        "PYSEC-2026-2151"
+      ]
+    },
+    "lodash:lodash": {
+      "module": "lodash",
+      "package": "lodash",
+      "severity": "critical",
+      "version": "4.17.4",
+      "vuln_ids": [
+        "GHSA-29mw-wpgm-hmr9",
+        "GHSA-35jh-r3h4-6jhm",
+        "GHSA-4xc9-xhrj-v574",
+        "GHSA-f23m-r3pf-42rh",
+        "GHSA-fvqr-27wr-82fm",
+        "GHSA-jf85-cpcp-j695",
+        "GHSA-p6mc-m468-83gw",
+        "GHSA-r5fr-rjxr-66jc",
+        "GHSA-x5rq-j2xg-h7qm",
+        "GHSA-xxjr-mmjv-4gpg"
+      ]
+    },
+    "requests:requests": {
+      "module": "requests",
+      "package": "requests",
+      "severity": "critical",
+      "version": "2.6.0",
+      "vuln_ids": [
+        "GHSA-9hjg-9r4m-mvj7",
+        "GHSA-9wx4-h78v-vm56",
+        "GHSA-gc5v-m9x4-r6x2",
+        "GHSA-j8r2-6x86-q33q",
+        "GHSA-x84v-xcm2-53pg",
+        "PYSEC-2018-28",
+        "PYSEC-2023-74",
+        "PYSEC-2026-1872",
+        "PYSEC-2026-1873",
+        "PYSEC-2026-2275"
+      ]
+    }
+  },
   "schema": 1
 }
