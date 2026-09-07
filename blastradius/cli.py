@@ -10,6 +10,47 @@ from .report import build_report, print_report, sort_entries, to_json
 from .scanner import discover_dependencies, discover_js_dependencies
 
 _SEVERITY_RANK = {"none": 0, "low": 1, "moderate": 2, "critical": 3}
+_MANIFEST_NAMES = ("requirements.txt", "pyproject.toml", "package.json")
+_SKIP_DIR_NAMES = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
+
+
+def _find_manifest_roots(root: Path) -> list[Path]:
+    """`root` itself if it has a manifest, plus any immediate subdirectory
+    that has one -- covers the common backend/ + frontend/ monorepo split
+    without a full recursive search."""
+    roots = []
+    if any((root / name).exists() for name in _MANIFEST_NAMES):
+        roots.append(root)
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.name not in _SKIP_DIR_NAMES and not child.name.startswith("."):
+                if any((child / name).exists() for name in _MANIFEST_NAMES):
+                    roots.append(child)
+    return roots
+
+
+def _scan_root(root: Path, *, use_cache: bool, log) -> list:
+    entries = []
+
+    py_deps = discover_dependencies(root)
+    if py_deps or (root / "requirements.txt").exists() or (root / "pyproject.toml").exists():
+        log(f"Found {len(py_deps)} declared Python dependencies.")
+        py_graph = build_project_graph(root)
+        log(f"Parsed {len(py_graph.funcs)} Python functions.")
+        entries += build_report(py_deps, py_graph, use_cache=use_cache)
+
+    if (root / "package.json").exists():
+        js_deps = discover_js_dependencies(root)
+        log(f"Found {len(js_deps)} declared JS/TS dependencies.")
+        try:
+            from .js_callgraph import NodeNotFoundError, build_js_project_graph
+            js_graph = build_js_project_graph(root)
+            log(f"Parsed {len(js_graph.funcs)} JS/TS functions.")
+            entries += build_report(js_deps, js_graph, use_cache=use_cache)
+        except NodeNotFoundError as exc:
+            log(f"[skipping JS/TS analysis] {exc}")
+
+    return entries
 
 
 def main() -> None:
@@ -65,25 +106,23 @@ def main() -> None:
             print(msg, file=sys.stderr)
 
     log(f"Scanning {project_root} ...")
+
+    manifest_roots = _find_manifest_roots(project_root)
+    if not manifest_roots:
+        print(
+            f"WARNING: no requirements.txt, pyproject.toml, or package.json found in "
+            f"{project_root} or its immediate subdirectories. Nothing was scanned -- "
+            f"the report below is empty because of that, NOT because your dependencies "
+            f"are clean. If this is a monorepo with manifests nested deeper (e.g. "
+            f"packages/*/package.json), scan each subproject directly.",
+            file=sys.stderr,
+        )
+
     entries = []
-
-    py_deps = discover_dependencies(project_root)
-    if py_deps or (project_root / "requirements.txt").exists() or (project_root / "pyproject.toml").exists():
-        log(f"Found {len(py_deps)} declared Python dependencies.")
-        py_graph = build_project_graph(project_root)
-        log(f"Parsed {len(py_graph.funcs)} Python functions across the project.")
-        entries += build_report(py_deps, py_graph, use_cache=not args.no_cache)
-
-    if (project_root / "package.json").exists():
-        js_deps = discover_js_dependencies(project_root)
-        log(f"Found {len(js_deps)} declared JS/TS dependencies.")
-        try:
-            from .js_callgraph import NodeNotFoundError, build_js_project_graph
-            js_graph = build_js_project_graph(project_root)
-            log(f"Parsed {len(js_graph.funcs)} JS/TS functions across the project.")
-            entries += build_report(js_deps, js_graph, use_cache=not args.no_cache)
-        except NodeNotFoundError as exc:
-            log(f"[skipping JS/TS analysis] {exc}")
+    for root in manifest_roots:
+        if root != project_root:
+            log(f"\n-- subproject: {root.relative_to(project_root)} --")
+        entries += _scan_root(root, use_cache=not args.no_cache, log=log)
 
     sort_entries(entries)
 

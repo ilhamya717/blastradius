@@ -19,7 +19,10 @@ existence-based SCA tools.
 
 1. **Scan** `requirements.txt`/`pyproject.toml` (Python) or `package.json`
    + a lockfile (JS/TS) for declared dependencies and resolve actual
-   pinned/installed versions.
+   pinned/installed versions. Checks the project root plus its immediate
+   subdirectories, so a `backend/` + `frontend/` monorepo split is
+   auto-discovered — if no manifest is found anywhere, that's reported as
+   an explicit warning, never a silent "no findings."
 2. **Static analysis**, no code execution — Python's own `ast` module for
    `.py` files, `@babel/parser` via a small Node.js helper for
    `.js`/`.jsx`/`.ts`/`.tsx`. Both feed the same internal model:
